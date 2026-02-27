@@ -108,11 +108,11 @@ static void lcd_initialize() {
     ESP_ERROR_CHECK(gpio_config((gpio_num_t)LCD_PIN_NUM_BCKL,&bk_gpio_config));
     gpio_set_level((gpio_num_t)LCD_PIN_NUM_BCKL, LCD_BCKL_OFF_LEVEL);
     #endif
-    
+
     esp_lcd_panel_handle_t panel_handle = NULL;
     esp_lcd_rgb_panel_config_t panel_config;
     memset(&panel_config,0,sizeof(esp_lcd_rgb_panel_config_t));
-     
+
         panel_config.data_width = 16; // RGB565 in parallel mode, thus 16bit in width
         //panel_config.dma_burst_size = 64;
         panel_config.num_fbs = 1,
@@ -140,7 +140,7 @@ static void lcd_initialize() {
         panel_config.data_gpio_nums[15]=LCD_PIN_NUM_D15;
 
         memset(&panel_config.timings,0,sizeof(esp_lcd_rgb_timing_t));
-        
+
         panel_config.timings.pclk_hz = LCD_PIXEL_CLOCK_HZ;
         panel_config.timings.h_res = LCD_HRES;
         panel_config.timings.v_res = LCD_VRES;
@@ -175,14 +175,15 @@ static void lcd_initialize() {
         lv_init();
         // create a lvgl display
         lv_display_t *display = lv_display_create(LCD_HRES, LCD_VRES);
-        
+
         // set color depth
         lv_display_set_color_format(display, LV_COLOR_FORMAT_RGB565);
         // create draw buffers
         void *buf1 = NULL;
         // it's recommended to allocate the draw buffer from internal memory, for better performance
         size_t draw_buffer_sz = LCD_HRES * 50 * sizeof(lv_color16_t);
-        buf1 = heap_caps_malloc(draw_buffer_sz, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+
+        buf1 = (lv_color_t *)heap_caps_malloc(draw_buffer_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         assert(buf1);
         // set LVGL draw buffers and partial mode
         lv_display_set_buffers(display, buf1, NULL, draw_buffer_sz, LV_DISPLAY_RENDER_MODE_PARTIAL);
@@ -202,13 +203,13 @@ static void lcd_initialize() {
         ESP_ERROR_CHECK(esp_timer_create(&lvgl_tick_timer_args, &lvgl_tick_timer));
         ESP_ERROR_CHECK(esp_timer_start_periodic(lvgl_tick_timer, 2 * 1000));
         xTaskCreate(lcd_lvgl_task, "lcd_task", 4096, NULL, 2, NULL);
-    
-        
+
+
 
         _lock_acquire(&lvgl_api_lock);
         ui_init();
         _lock_release(&lvgl_api_lock);
-        
+
 }
 esp_lcd_touch_handle_t touch_handle = NULL;
 static void my_input_read(lv_indev_t * indev, lv_indev_data_t * data)
@@ -258,7 +259,7 @@ static void touch_initialize() {
     esp_lcd_panel_io_handle_t tio_handle;
     esp_lcd_touch_config_t tp_cfg;
     i2c_master_bus_handle_t i2c_handle;
-    
+
     memset(&tio_cfg,0,sizeof(tio_cfg));
     tio_cfg.dev_addr = ESP_LCD_TOUCH_IO_I2C_GT911_ADDRESS;
     tio_cfg.control_phase_bytes = 1;
