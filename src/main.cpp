@@ -299,7 +299,10 @@ extern "C" void app_main() {
         if(touch_handle!=NULL) {
             esp_lcd_touch_read_data(touch_handle);
         }
+        _lock_acquire(&lvgl_api_lock);
         lv_timer_handler();
+        ui_tick();
+        _lock_release(&lvgl_api_lock);
         vTaskDelay(5);
     }
 }
