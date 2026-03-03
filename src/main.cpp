@@ -32,8 +32,8 @@
 static esp_lcd_panel_handle_t lcd_handle = nullptr;
 static SemaphoreHandle_t sem_vsync_end;
 static SemaphoreHandle_t sem_gui_ready;
-// LVGL library is not thread-safe, this example will call LVGL APIs from different tasks, so use a mutex to protect it
 static _lock_t lvgl_api_lock;
+esp_lcd_touch_handle_t touch_handle = NULL;
 
 static void i2c_initialize()
 {
@@ -81,17 +81,6 @@ static void lvgl_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px_ma
     lv_display_flush_ready(disp);
 }
 
-
-static void lcd_lvgl_task(void *arg)
-{
-    uint32_t time_till_next_ms = 0;
-    while (1) {
-        _lock_acquire(&lvgl_api_lock);
-        time_till_next_ms = lv_timer_handler();
-        _lock_release(&lvgl_api_lock);
-        usleep(1000 * time_till_next_ms);
-    }
-}
 
 static void lcd_initialize() {
 
@@ -178,14 +167,11 @@ static void lcd_initialize() {
 
         // set color depth
         lv_display_set_color_format(display, LV_COLOR_FORMAT_RGB565);
-        // create draw buffers
         void *buf1 = NULL;
-        // it's recommended to allocate the draw buffer from internal memory, for better performance
-        size_t draw_buffer_sz = LCD_HRES * 50 * sizeof(lv_color16_t);
+        size_t draw_buffer_sz = LCD_HRES * 240 * sizeof(lv_color16_t);
 
         buf1 = (lv_color_t *)heap_caps_malloc(draw_buffer_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         assert(buf1);
-        // set LVGL draw buffers and partial mode
         lv_display_set_buffers(display, buf1, NULL, draw_buffer_sz, LV_DISPLAY_RENDER_MODE_PARTIAL);
 
                 // set the callback which can copy the rendered image to an area of the display
@@ -202,16 +188,11 @@ static void lcd_initialize() {
         esp_timer_handle_t lvgl_tick_timer = NULL;
         ESP_ERROR_CHECK(esp_timer_create(&lvgl_tick_timer_args, &lvgl_tick_timer));
         ESP_ERROR_CHECK(esp_timer_start_periodic(lvgl_tick_timer, 2 * 1000));
-        xTaskCreate(lcd_lvgl_task, "lcd_task", 4096, NULL, 2, NULL);
-
-
-
         _lock_acquire(&lvgl_api_lock);
         ui_init();
         _lock_release(&lvgl_api_lock);
 
 }
-esp_lcd_touch_handle_t touch_handle = NULL;
 static void my_input_read(lv_indev_t * indev, lv_indev_data_t * data)
 {
     uint16_t x[5],y[5],s[5];
@@ -290,19 +271,28 @@ static void touch_initialize() {
     lv_indev_set_read_cb(indev, my_input_read);    /* Set driver function. */
 
 }
-extern "C" void app_main() {
-    printf("ESP-IDF version: %d.%d.%d\n",ESP_IDF_VERSION_MAJOR,ESP_IDF_VERSION_MINOR,ESP_IDF_VERSION_PATCH);
-    i2c_initialize();
-    lcd_initialize();
-    touch_initialize();
-    while(1) {
-        if(touch_handle!=NULL) {
+static void ui_task(void *arg)
+{
+    while (1) {
+        if (touch_handle != NULL) {
             esp_lcd_touch_read_data(touch_handle);
         }
         _lock_acquire(&lvgl_api_lock);
         lv_timer_handler();
         ui_tick();
         _lock_release(&lvgl_api_lock);
-        vTaskDelay(5);
+        vTaskDelay(pdMS_TO_TICKS(5));
     }
+}
+
+extern "C" void app_main() {
+    printf("ESP-IDF version: %d.%d.%d\n",ESP_IDF_VERSION_MAJOR,ESP_IDF_VERSION_MINOR,ESP_IDF_VERSION_PATCH);
+    i2c_initialize();
+    lcd_initialize();
+    touch_initialize();
+
+    xTaskCreate(ui_task, "ui_task", 8192, NULL, 2, NULL);
+
+    // app_main is now free -- add your application logic here,
+    // create additional tasks, etc.
 }

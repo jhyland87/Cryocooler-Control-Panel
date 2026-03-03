@@ -1,21 +1,15 @@
-#ifndef EEZ_LVGL_UI_GUI_H
-#define EEZ_LVGL_UI_GUI_H
-
-#include <lvgl/lvgl.h>
-
-#include "eez-flow.h"
+#ifndef UI_H
+#define UI_H
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-extern const uint8_t assets[7284];
-
-void ui_init();
-void ui_tick();
+void ui_init(void);
+void ui_tick(void);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif // EEZ_LVGL_UI_GUI_H
+#endif /* UI_H */
