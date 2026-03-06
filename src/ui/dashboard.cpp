@@ -12,19 +12,15 @@ static lv_obj_t *s_system_table;
 static lv_obj_t *s_measure_table;
 static lv_obj_t *s_state_table;
 
-#define CHART_POINT_COUNT  60
-#define CHART_Y_MIN        200
-#define CHART_Y_MAX        500
-#define CHART_X_LABEL_COUNT 7
-#define CHART_Y_LABEL_COUNT 7
+#define CH_POINT_COUNT 60
 
 static dashboard_ctrl_cb_t s_ctrl_cb;
 
-static lv_obj_t *s_temp_chart;
-static lv_chart_series_t *s_temp_series;
-static lv_obj_t *s_chart_x_labels[CHART_X_LABEL_COUNT];
-static lv_obj_t *s_chart_y_labels[CHART_Y_LABEL_COUNT];
-static uint16_t s_chart_start_minutes;
+static lv_obj_t          *s_ch_charts[CH_CHART_COUNT];
+static lv_chart_series_t *s_ch_series[CH_CHART_COUNT];
+static int32_t            s_ch_y_min[CH_CHART_COUNT];
+static int32_t            s_ch_y_max[CH_CHART_COUNT];
+static bool               s_ch_has_data[CH_CHART_COUNT];
 
 static const char *bool_to_on_off(bool val) {
     return val ? "On" : "Off";
@@ -76,6 +72,7 @@ static void init_stub_data(void) {
     snprintf(s_data.state_machine_state, DASHBOARD_VALUE_BUF_SIZE, "Initialize");
 }
 
+
 /* Header row draw customization: dark background with white text */
 static void table_draw_event_cb(lv_event_t *e) {
     lv_draw_task_t *draw_task = lv_event_get_draw_task(e);
@@ -124,7 +121,7 @@ static void ctrl_btn_event_cb(lv_event_t *e) {
 static lv_obj_t *create_ctrl_button(lv_obj_t *parent, const char *label_text,
                                      lv_color_t bg_color, dashboard_ctrl_action_t action) {
     lv_obj_t *btn = lv_button_create(parent);
-    lv_obj_set_size(btn, 320, 70);
+    lv_obj_set_size(btn, 280, 70);
     lv_obj_set_style_bg_color(btn, bg_color, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_radius(btn, 8, LV_PART_MAIN);
@@ -152,10 +149,11 @@ static void create_control_tab(lv_obj_t *parent) {
     lv_obj_set_style_pad_row(parent, 30, LV_PART_MAIN);
     lv_obj_set_style_pad_column(parent, 40, LV_PART_MAIN);
 
-    create_ctrl_button(parent, "Start Cryocooler", lv_color_hex(0x2E7D32), CTRL_ACTION_START_CRYO);
-    create_ctrl_button(parent, "Stop Cryocooler",  lv_color_hex(0xC62828), CTRL_ACTION_STOP_CRYO);
-    create_ctrl_button(parent, "Shutdown",          lv_color_hex(0xE65100), CTRL_ACTION_SHUTDOWN);
-    create_ctrl_button(parent, "Reset",             lv_color_hex(0x1565C0), CTRL_ACTION_RESET);
+    create_ctrl_button(parent, LV_SYMBOL_PLAY " Start",       lv_color_hex(0x2E7D32), CTRL_ACTION_START);
+    create_ctrl_button(parent, LV_SYMBOL_STOP " Stop",        lv_color_hex(0xC62828), CTRL_ACTION_STOP);
+    create_ctrl_button(parent, LV_SYMBOL_REFRESH " Reinit",   lv_color_hex(0x1565C0), CTRL_ACTION_REINIT);
+    create_ctrl_button(parent, LV_SYMBOL_POWER " Off",        lv_color_hex(0xE65100), CTRL_ACTION_OFF);
+    create_ctrl_button(parent, LV_SYMBOL_CLOSE " Fault Clear",lv_color_hex(0x6A1B9A), CTRL_ACTION_FAULT_CLEAR);
 }
 
 /* ── Time Tab ────────────────────────────────────────── */
@@ -164,8 +162,8 @@ static void create_time_tab(lv_obj_t *parent) {
     s_time_table = lv_table_create(parent);
     lv_table_set_column_count(s_time_table, 2);
     lv_table_set_row_count(s_time_table, 5);
-    lv_table_set_column_width(s_time_table, 0, 500);
-    lv_table_set_column_width(s_time_table, 1, 260);
+    lv_table_set_column_width(s_time_table, 0, 430);
+    lv_table_set_column_width(s_time_table, 1, 250);
 
     lv_table_set_cell_value(s_time_table, 0, 0, "Name");
     lv_table_set_cell_value(s_time_table, 0, 1, "Value");
@@ -191,8 +189,8 @@ static void create_led_tab(lv_obj_t *parent) {
     s_led_table = lv_table_create(parent);
     lv_table_set_column_count(s_led_table, 2);
     lv_table_set_row_count(s_led_table, 3);
-    lv_table_set_column_width(s_led_table, 0, 500);
-    lv_table_set_column_width(s_led_table, 1, 260);
+    lv_table_set_column_width(s_led_table, 0, 430);
+    lv_table_set_column_width(s_led_table, 1, 250);
 
     lv_table_set_cell_value(s_led_table, 0, 0, "Name");
     lv_table_set_cell_value(s_led_table, 0, 1, "Status");
@@ -214,8 +212,8 @@ static void create_relay_tab(lv_obj_t *parent) {
     s_relay_table = lv_table_create(parent);
     lv_table_set_column_count(s_relay_table, 2);
     lv_table_set_row_count(s_relay_table, 3);
-    lv_table_set_column_width(s_relay_table, 0, 500);
-    lv_table_set_column_width(s_relay_table, 1, 260);
+    lv_table_set_column_width(s_relay_table, 0, 430);
+    lv_table_set_column_width(s_relay_table, 1, 250);
 
     lv_table_set_cell_value(s_relay_table, 0, 0, "Name");
     lv_table_set_cell_value(s_relay_table, 0, 1, "Status");
@@ -237,7 +235,7 @@ static void create_system_tab(lv_obj_t *parent) {
     s_system_table = lv_table_create(parent);
     lv_table_set_column_count(s_system_table, 2);
     lv_table_set_row_count(s_system_table, 11);
-    lv_table_set_column_width(s_system_table, 0, 560);
+    lv_table_set_column_width(s_system_table, 0, 470);
     lv_table_set_column_width(s_system_table, 1, 200);
 
     lv_table_set_cell_value(s_system_table, 0, 0, "Name");
@@ -276,8 +274,8 @@ static void create_measure_tab(lv_obj_t *parent) {
     s_measure_table = lv_table_create(parent);
     lv_table_set_column_count(s_measure_table, 3);
     lv_table_set_row_count(s_measure_table, 15);
-    lv_table_set_column_width(s_measure_table, 0, 440);
-    lv_table_set_column_width(s_measure_table, 1, 180);
+    lv_table_set_column_width(s_measure_table, 0, 360);
+    lv_table_set_column_width(s_measure_table, 1, 170);
     lv_table_set_column_width(s_measure_table, 2, 140);
 
     lv_table_set_cell_value(s_measure_table, 0, 0, "Name");
@@ -340,8 +338,8 @@ static void create_state_tab(lv_obj_t *parent) {
     s_state_table = lv_table_create(parent);
     lv_table_set_column_count(s_state_table, 2);
     lv_table_set_row_count(s_state_table, 3);
-    lv_table_set_column_width(s_state_table, 0, 500);
-    lv_table_set_column_width(s_state_table, 1, 260);
+    lv_table_set_column_width(s_state_table, 0, 430);
+    lv_table_set_column_width(s_state_table, 1, 250);
 
     lv_table_set_cell_value(s_state_table, 0, 0, "Name");
     lv_table_set_cell_value(s_state_table, 0, 1, "Value");
@@ -357,84 +355,84 @@ static void refresh_state_tab(void) {
     lv_table_set_cell_value(s_state_table, 2, 1, s_data.state_machine_state);
 }
 
-/* ── Chart Tab ───────────────────────────────────────── */
+/* ── Chart Tab (cold-head 2×3 grid) ──────────────────── */
 
-static void update_chart_x_labels(void) {
-    const int offsets[] = {0, 10, 20, 30, 40, 50, 59};
-    for (int i = 0; i < CHART_X_LABEL_COUNT; i++) {
-        uint16_t minutes = (s_chart_start_minutes + offsets[i]) % (24 * 60);
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%02u:%02u", minutes / 60, minutes % 60);
-        lv_label_set_text(s_chart_x_labels[i], buf);
-    }
-}
+static lv_obj_t *create_mini_chart(lv_obj_t *parent, const char *title,
+                                   lv_color_t color, int idx)
+{
+    lv_obj_t *cell = lv_obj_create(parent);
+    lv_obj_set_size(cell, 335, 130);
+    lv_obj_set_flex_flow(cell, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(cell, 4, LV_PART_MAIN);
+    lv_obj_set_style_pad_row(cell, 2, LV_PART_MAIN);
+    lv_obj_set_style_border_width(cell, 1, LV_PART_MAIN);
+    lv_obj_set_style_border_color(cell, lv_color_hex(0xDDDDDD), LV_PART_MAIN);
+    lv_obj_set_style_radius(cell, 6, LV_PART_MAIN);
+    lv_obj_clear_flag(cell, LV_OBJ_FLAG_SCROLLABLE);
 
-static void init_chart_stub_data(void) {
-    s_chart_start_minutes = 8 * 60;
+    lv_obj_t *lbl = lv_label_create(cell);
+    lv_label_set_text(lbl, title);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(0x003366), LV_PART_MAIN);
 
-    for (int i = 0; i < CHART_POINT_COUNT; i++) {
-        float base = 30.0f + (5.0f * i / CHART_POINT_COUNT);
-        float noise = ((float)((i * 7 + 13) % 20) - 10.0f) * 0.15f;
-        int32_t val = (int32_t)((base + noise) * 10.0f);
-        lv_chart_set_next_value(s_temp_chart, s_temp_series, val);
-    }
+    lv_obj_t *chart = lv_chart_create(cell);
+    lv_obj_set_size(chart, 320, 95);
+    lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
+    lv_chart_set_point_count(chart, CH_POINT_COUNT);
+    lv_chart_set_axis_range(chart, LV_CHART_AXIS_PRIMARY_Y, 0, 100);
+    lv_chart_set_div_line_count(chart, 3, 5);
+    lv_chart_set_update_mode(chart, LV_CHART_UPDATE_MODE_SHIFT);
 
-    update_chart_x_labels();
+    lv_obj_set_style_size(chart, 0, 0, LV_PART_INDICATOR);
+    lv_obj_set_style_line_width(chart, 2, LV_PART_ITEMS);
+    lv_obj_set_style_line_color(chart, lv_color_hex(0xEEEEEE), LV_PART_MAIN);
+    lv_obj_set_style_border_width(chart, 1, LV_PART_MAIN);
+    lv_obj_set_style_border_color(chart, lv_color_hex(0xCCCCCC), LV_PART_MAIN);
+    lv_obj_set_style_pad_all(chart, 0, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(chart, lv_color_hex(0xFAFAFA), LV_PART_MAIN);
+
+    s_ch_charts[idx] = chart;
+    s_ch_series[idx] = lv_chart_add_series(chart, color, LV_CHART_AXIS_PRIMARY_Y);
+    s_ch_has_data[idx] = false;
+
+    return cell;
 }
 
 static void create_chart_tab(lv_obj_t *parent) {
-    lv_obj_clear_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(parent, LV_FLEX_ALIGN_SPACE_EVENLY,
+                          LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_all(parent, 6, LV_PART_MAIN);
+    lv_obj_set_style_pad_row(parent, 4, LV_PART_MAIN);
+    lv_obj_set_style_pad_column(parent, 6, LV_PART_MAIN);
 
-    lv_obj_t *title = lv_label_create(parent);
-    lv_label_set_text(title, "Cooler Rejection Temperature");
-    lv_obj_set_style_text_color(title, lv_color_hex(0x003366), LV_PART_MAIN);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 20, 4);
+    create_mini_chart(parent, "Cold Head Temp (K)",
+                      lv_color_hex(0xFF6600), CH_CHART_TEMP_K);
+    create_mini_chart(parent, "Cooling Rate",
+                      lv_color_hex(0x2196F3), CH_CHART_COOLING_RATE);
+    create_mini_chart(parent, "Cooldown %",
+                      lv_color_hex(0x4CAF50), CH_CHART_COOLDOWN_PCT);
+    create_mini_chart(parent, "\xCE\x94T Below Ambient (\xC2\xB0""C)",
+                      lv_color_hex(0x9C27B0), CH_CHART_DELTA_AMBIENT);
+    create_mini_chart(parent, "Cold Head Voltage (V)",
+                      lv_color_hex(0xF44336), CH_CHART_VOLTAGE);
+    create_mini_chart(parent, "Cold Head Current (A)",
+                      lv_color_hex(0x009688), CH_CHART_CURRENT);
+}
 
-    lv_obj_t *unit = lv_label_create(parent);
-    lv_label_set_text(unit, "\xC2\xB0""C");
-    lv_obj_set_style_text_color(unit, lv_color_hex(0x666666), LV_PART_MAIN);
-    lv_obj_set_pos(unit, 50, 18);
+/* ── ESP-NOW Tab ─────────────────────────────────────── */
 
-    s_temp_chart = lv_chart_create(parent);
-    lv_obj_set_size(s_temp_chart, 680, 340);
-    lv_obj_set_pos(s_temp_chart, 75, 30);
-    lv_chart_set_type(s_temp_chart, LV_CHART_TYPE_LINE);
-    lv_chart_set_point_count(s_temp_chart, CHART_POINT_COUNT);
-    lv_chart_set_axis_range(s_temp_chart, LV_CHART_AXIS_PRIMARY_Y, CHART_Y_MIN, CHART_Y_MAX);
-    lv_chart_set_div_line_count(s_temp_chart, 5, 5);
-    lv_chart_set_update_mode(s_temp_chart, LV_CHART_UPDATE_MODE_SHIFT);
+static lv_obj_t *s_espnow_label;
+static lv_obj_t *s_espnow_status_badge;
 
-    lv_obj_set_style_size(s_temp_chart, 0, 0, LV_PART_INDICATOR);
-    lv_obj_set_style_line_width(s_temp_chart, 2, LV_PART_ITEMS);
-    lv_obj_set_style_line_color(s_temp_chart, lv_color_hex(0xEEEEEE), LV_PART_MAIN);
-    lv_obj_set_style_border_width(s_temp_chart, 1, LV_PART_MAIN);
-    lv_obj_set_style_border_color(s_temp_chart, lv_color_hex(0xBBBBBB), LV_PART_MAIN);
-    lv_obj_set_style_pad_all(s_temp_chart, 0, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(s_temp_chart, lv_color_hex(0xFAFAFA), LV_PART_MAIN);
+static void create_espnow_tab(lv_obj_t *parent) {
+    lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(parent, 12, LV_PART_MAIN);
 
-    s_temp_series = lv_chart_add_series(s_temp_chart, lv_color_hex(0xFF6600), LV_CHART_AXIS_PRIMARY_Y);
-
-    int y_vals[] = {50, 45, 40, 35, 30, 25, 20};
-    for (int i = 0; i < CHART_Y_LABEL_COUNT; i++) {
-        s_chart_y_labels[i] = lv_label_create(parent);
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%d", y_vals[i]);
-        lv_label_set_text(s_chart_y_labels[i], buf);
-        lv_obj_set_style_text_color(s_chart_y_labels[i], lv_color_hex(0x666666), LV_PART_MAIN);
-        int y = 30 + (340 * i / (CHART_Y_LABEL_COUNT - 1)) - 7;
-        lv_obj_set_pos(s_chart_y_labels[i], 45, y);
-    }
-
-    const int x_offsets[] = {0, 10, 20, 30, 40, 50, 59};
-    for (int i = 0; i < CHART_X_LABEL_COUNT; i++) {
-        s_chart_x_labels[i] = lv_label_create(parent);
-        lv_label_set_text(s_chart_x_labels[i], "--:--");
-        lv_obj_set_style_text_color(s_chart_x_labels[i], lv_color_hex(0x666666), LV_PART_MAIN);
-        int x = 75 + (680 * x_offsets[i] / (CHART_POINT_COUNT - 1)) - 15;
-        lv_obj_set_pos(s_chart_x_labels[i], x, 375);
-    }
-
-    init_chart_stub_data();
+    s_espnow_label = lv_label_create(parent);
+    lv_label_set_long_mode(s_espnow_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(s_espnow_label, 670);
+    lv_label_set_text(s_espnow_label, "Waiting for ESP-NOW data...");
+    lv_obj_set_style_text_color(s_espnow_label, lv_color_hex(0x333333), LV_PART_MAIN);
 }
 
 /* ── Public API ──────────────────────────────────────── */
@@ -443,26 +441,29 @@ void dashboard_init(void) {
     init_stub_data();
 
     lv_obj_t *tv = lv_tabview_create(lv_screen_active());
-    lv_tabview_set_tab_bar_position(tv, LV_DIR_TOP);
-    lv_tabview_set_tab_bar_size(tv, 40);
+    lv_tabview_set_tab_bar_position(tv, LV_DIR_LEFT);
+    lv_tabview_set_tab_bar_size(tv, 90);
     lv_obj_set_size(tv, 800, 480);
 
-    lv_obj_set_style_bg_color(lv_tabview_get_tab_bar(tv), lv_color_hex(0x003366), LV_PART_MAIN);
-    lv_obj_set_style_text_color(lv_tabview_get_tab_bar(tv), lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-    lv_obj_set_style_border_side(lv_tabview_get_tab_bar(tv), LV_BORDER_SIDE_BOTTOM, LV_PART_ITEMS);
-    lv_obj_set_style_border_width(lv_tabview_get_tab_bar(tv), 3,
+    lv_obj_t *tab_bar = lv_tabview_get_tab_bar(tv);
+    lv_obj_set_style_bg_color(tab_bar, lv_color_hex(0x003366), LV_PART_MAIN);
+    lv_obj_set_style_text_color(tab_bar, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_style_border_side(tab_bar, LV_BORDER_SIDE_RIGHT, LV_PART_ITEMS);
+    lv_obj_set_style_border_width(tab_bar, 3,
                                  (lv_style_selector_t)(LV_PART_ITEMS | LV_STATE_CHECKED));
-    lv_obj_set_style_border_color(lv_tabview_get_tab_bar(tv), lv_color_hex(0x66BBFF),
+    lv_obj_set_style_border_color(tab_bar, lv_color_hex(0x66BBFF),
                                   (lv_style_selector_t)(LV_PART_ITEMS | LV_STATE_CHECKED));
+    lv_obj_set_style_text_align(tab_bar, LV_TEXT_ALIGN_CENTER, LV_PART_ITEMS);
 
-    lv_obj_t *tab_ctrl    = lv_tabview_add_tab(tv, "Control");
-    lv_obj_t *tab_time    = lv_tabview_add_tab(tv, "Time");
-    lv_obj_t *tab_led     = lv_tabview_add_tab(tv, "LED");
-    lv_obj_t *tab_relay   = lv_tabview_add_tab(tv, "Relay");
-    lv_obj_t *tab_system  = lv_tabview_add_tab(tv, "System");
-    lv_obj_t *tab_measure = lv_tabview_add_tab(tv, "Measure");
-    lv_obj_t *tab_state   = lv_tabview_add_tab(tv, "State");
-    lv_obj_t *tab_chart   = lv_tabview_add_tab(tv, "Chart");
+    lv_obj_t *tab_ctrl    = lv_tabview_add_tab(tv, LV_SYMBOL_SETTINGS " Control");
+    lv_obj_t *tab_time    = lv_tabview_add_tab(tv, LV_SYMBOL_BELL " Time");
+    lv_obj_t *tab_led     = lv_tabview_add_tab(tv, LV_SYMBOL_EYE_OPEN " LED");
+    lv_obj_t *tab_relay   = lv_tabview_add_tab(tv, LV_SYMBOL_SHUFFLE " Relay");
+    lv_obj_t *tab_system  = lv_tabview_add_tab(tv, LV_SYMBOL_WARNING " System");
+    lv_obj_t *tab_measure = lv_tabview_add_tab(tv, LV_SYMBOL_GPS " Measure");
+    lv_obj_t *tab_state   = lv_tabview_add_tab(tv, LV_SYMBOL_LIST " State");
+    lv_obj_t *tab_chart   = lv_tabview_add_tab(tv, LV_SYMBOL_CHARGE " Chart");
+    lv_obj_t *tab_espnow  = lv_tabview_add_tab(tv, LV_SYMBOL_WIFI " ESP-NOW");
 
     create_control_tab(tab_ctrl);
     create_time_tab(tab_time);
@@ -472,6 +473,24 @@ void dashboard_init(void) {
     create_measure_tab(tab_measure);
     create_state_tab(tab_state);
     create_chart_tab(tab_chart);
+    create_espnow_tab(tab_espnow);
+
+    s_espnow_status_badge = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(s_espnow_status_badge, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_left(s_espnow_status_badge, 10, LV_PART_MAIN);
+    lv_obj_set_style_pad_right(s_espnow_status_badge, 10, LV_PART_MAIN);
+    lv_obj_set_style_pad_top(s_espnow_status_badge, 4, LV_PART_MAIN);
+    lv_obj_set_style_pad_bottom(s_espnow_status_badge, 4, LV_PART_MAIN);
+    lv_obj_set_style_radius(s_espnow_status_badge, 10, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_espnow_status_badge, lv_color_hex(0x666666), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s_espnow_status_badge, LV_OPA_90, LV_PART_MAIN);
+    lv_obj_set_style_border_width(s_espnow_status_badge, 0, LV_PART_MAIN);
+    lv_obj_align(s_espnow_status_badge, LV_ALIGN_BOTTOM_RIGHT, -8, -8);
+    lv_obj_clear_flag(s_espnow_status_badge, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *status_lbl = lv_label_create(s_espnow_status_badge);
+    lv_label_set_text(status_lbl, "ESP-NOW: No Signal");
+    lv_obj_set_style_text_color(status_lbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
 
     s_dirty = true;
     dashboard_tick();
@@ -501,16 +520,44 @@ void dashboard_set_ctrl_callback(dashboard_ctrl_cb_t cb) {
     s_ctrl_cb = cb;
 }
 
-void dashboard_add_temp_reading(float temp_c, uint8_t hour, uint8_t minute) {
-    int32_t val = (int32_t)(temp_c * 10.0f);
-    lv_chart_set_next_value(s_temp_chart, s_temp_series, val);
-
-    uint16_t new_end = (uint16_t)(hour) * 60 + minute;
-    if (new_end >= (CHART_POINT_COUNT - 1)) {
-        s_chart_start_minutes = new_end - (CHART_POINT_COUNT - 1);
+void dashboard_set_espnow_status(bool connected) {
+    if (!s_espnow_status_badge) return;
+    lv_obj_t *lbl = lv_obj_get_child(s_espnow_status_badge, 0);
+    if (connected) {
+        lv_obj_set_style_bg_color(s_espnow_status_badge, lv_color_hex(0x2E7D32), LV_PART_MAIN);
+        lv_label_set_text(lbl, "ESP-NOW: Connected");
     } else {
-        s_chart_start_minutes = (24 * 60) + new_end - (CHART_POINT_COUNT - 1);
+        lv_obj_set_style_bg_color(s_espnow_status_badge, lv_color_hex(0x666666), LV_PART_MAIN);
+        lv_label_set_text(lbl, "ESP-NOW: No Signal");
+    }
+}
+
+void dashboard_set_espnow_message(const char *msg) {
+    if (s_espnow_label) {
+        lv_label_set_text(s_espnow_label, msg);
+    }
+}
+
+void dashboard_add_cold_head_reading(cold_head_chart_t chart, float value) {
+    int idx = (int)chart;
+    if (idx < 0 || idx >= CH_CHART_COUNT || !s_ch_charts[idx]) return;
+
+    int32_t val = (int32_t)(value * 10.0f);
+
+    if (!s_ch_has_data[idx]) {
+        s_ch_y_min[idx] = val;
+        s_ch_y_max[idx] = val;
+        s_ch_has_data[idx] = true;
+    } else {
+        if (val < s_ch_y_min[idx]) s_ch_y_min[idx] = val;
+        if (val > s_ch_y_max[idx]) s_ch_y_max[idx] = val;
     }
 
-    update_chart_x_labels();
+    int32_t range = s_ch_y_max[idx] - s_ch_y_min[idx];
+    int32_t pad = range / 10;
+    if (pad < 10) pad = 10;
+
+    lv_chart_set_axis_range(s_ch_charts[idx], LV_CHART_AXIS_PRIMARY_Y,
+                            s_ch_y_min[idx] - pad, s_ch_y_max[idx] + pad);
+    lv_chart_set_next_value(s_ch_charts[idx], s_ch_series[idx], val);
 }
