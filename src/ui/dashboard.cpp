@@ -505,6 +505,23 @@ static void create_chart_tab(lv_obj_t *parent) {
 static lv_obj_t *s_espnow_label;
 static lv_obj_t *s_espnow_status_badge;
 
+/* ── Console Tab ─────────────────────────────────────── */
+
+static lv_obj_t *s_console_ta         = nullptr;
+static uint32_t  s_console_line_count = 0u;
+
+/** Clear the textarea and start a fresh page after this many appended lines. */
+static constexpr uint32_t CONSOLE_MAX_LINES = 200u;
+
+/* ── Command input overlay (on-screen keyboard) ─────── */
+
+/** Floating container holding the input row + keyboard (screen-level child). */
+static lv_obj_t *s_cmd_overlay   = nullptr;
+/** Single-line textarea inside the overlay that the keyboard writes into. */
+static lv_obj_t *s_cmd_input_ta  = nullptr;
+/** User-registered callback for sending a typed command to the cryocooler. */
+static dashboard_send_cmd_cb_t s_send_cmd_cb = nullptr;
+
 static void create_espnow_tab(lv_obj_t *parent) {
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_all(parent, 12, LV_PART_MAIN);
@@ -514,6 +531,151 @@ static void create_espnow_tab(lv_obj_t *parent) {
     lv_obj_set_width(s_espnow_label, 670);
     lv_label_set_text(s_espnow_label, "Waiting for ESP-NOW data...");
     lv_obj_set_style_text_color(s_espnow_label, lv_color_hex(0x333333), LV_PART_MAIN);
+}
+
+/* ── Console Tab ─────────────────────────────────────── */
+
+static void console_clear_btn_cb(lv_event_t * /*e*/) {
+    dashboard_console_clear();
+}
+
+/* ── Command overlay helpers ─────────────────────────── */
+
+/** Async-safe helper: hides the overlay after the current event unwinds. */
+static void do_hide_overlay(void * /*param*/) {
+    if (s_cmd_overlay) {
+        lv_obj_add_flag(s_cmd_overlay, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+/**
+ * Read the typed text, echo it to the console, invoke the send callback,
+ * and hide the overlay.  Safe to call from any LVGL event.
+ */
+static void console_send_cmd_cb(lv_event_t * /*e*/) {
+    if (!s_cmd_input_ta) return;
+
+    const char *text = lv_textarea_get_text(s_cmd_input_ta);
+    if (text && text[0] != '\0') {
+        // Echo typed command to the console output
+        char echo[202];
+        snprintf(echo, sizeof(echo), "> %s\n", text);
+        dashboard_console_append(echo);
+
+        // Forward to cryocooler via registered callback
+        if (s_send_cmd_cb) {
+            s_send_cmd_cb(text);
+        }
+
+        // Clear the input field for next use
+        lv_textarea_set_text(s_cmd_input_ta, "");
+    }
+
+    // Defer hiding so the keyboard READY event can finish cleanly
+    lv_async_call(do_hide_overlay, nullptr);
+}
+
+/** Close/Cancel button or keyboard Cancel key — just hide the overlay. */
+static void console_close_overlay_cb(lv_event_t * /*e*/) {
+    lv_async_call(do_hide_overlay, nullptr);
+}
+
+/** Keyboard READY event (Enter key). */
+static void console_kb_ready_cb(lv_event_t *e) {
+    console_send_cmd_cb(e);
+}
+
+/** Keyboard CANCEL event (close key). */
+static void console_kb_cancel_cb(lv_event_t * /*e*/) {
+    lv_async_call(do_hide_overlay, nullptr);
+}
+
+/** CMD button in toolbar — show the command overlay. */
+static void console_open_overlay_cb(lv_event_t * /*e*/) {
+    if (!s_cmd_overlay) return;  // created in dashboard_init()
+    lv_obj_clear_flag(s_cmd_overlay, LV_OBJ_FLAG_HIDDEN);
+    // Clear any leftover text from a previous session
+    if (s_cmd_input_ta) {
+        lv_textarea_set_text(s_cmd_input_ta, "");
+    }
+}
+
+static void create_console_tab(lv_obj_t *parent) {
+    lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(parent, 0, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(parent, lv_color_hex(0x0D1117), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(parent, LV_OPA_COVER, LV_PART_MAIN);
+
+    // ── Toolbar ───────────────────────────────────────────────────────────
+    lv_obj_t *toolbar = lv_obj_create(parent);
+    lv_obj_set_size(toolbar, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(toolbar, lv_color_hex(0x161B22), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(toolbar, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(toolbar, 0, LV_PART_MAIN);
+    lv_obj_set_style_border_side(toolbar, LV_BORDER_SIDE_BOTTOM, LV_PART_MAIN);
+    lv_obj_set_style_border_color(toolbar, lv_color_hex(0x30363D), LV_PART_MAIN);
+    lv_obj_set_style_border_width(toolbar, 1, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(toolbar, 6, LV_PART_MAIN);
+    lv_obj_set_style_pad_row(toolbar, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(toolbar, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(toolbar);
+    lv_label_set_text(title, LV_SYMBOL_EDIT " Console");
+    lv_obj_set_style_text_color(title, lv_color_hex(0x8B949E), LV_PART_MAIN);
+    lv_obj_align(title, LV_ALIGN_LEFT_MID, 4, 0);
+
+    // ── Cmd button (opens keyboard overlay) ───────────────────────────────
+    lv_obj_t *cmd_btn = lv_button_create(toolbar);
+    lv_obj_set_size(cmd_btn, LV_SIZE_CONTENT, 28);
+    lv_obj_set_style_bg_color(cmd_btn, lv_color_hex(0x1F4E79), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(cmd_btn, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_color(cmd_btn, lv_color_hex(0x30363D), LV_PART_MAIN);
+    lv_obj_set_style_border_width(cmd_btn, 1, LV_PART_MAIN);
+    lv_obj_set_style_radius(cmd_btn, 4, LV_PART_MAIN);
+    lv_obj_set_style_pad_hor(cmd_btn, 10, LV_PART_MAIN);
+    lv_obj_align(cmd_btn, LV_ALIGN_RIGHT_MID, -90, 0);
+    lv_obj_add_event_cb(cmd_btn, console_open_overlay_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *cmd_lbl = lv_label_create(cmd_btn);
+    lv_label_set_text(cmd_lbl, LV_SYMBOL_EDIT " Cmd");
+    lv_obj_set_style_text_color(cmd_lbl, lv_color_hex(0xADD8E6), LV_PART_MAIN);
+    lv_obj_center(cmd_lbl);
+
+    // ── Clear button ───────────────────────────────────────────────────────
+    lv_obj_t *clear_btn = lv_button_create(toolbar);
+    lv_obj_set_size(clear_btn, LV_SIZE_CONTENT, 28);
+    lv_obj_set_style_bg_color(clear_btn, lv_color_hex(0x21262D), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(clear_btn, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_color(clear_btn, lv_color_hex(0x30363D), LV_PART_MAIN);
+    lv_obj_set_style_border_width(clear_btn, 1, LV_PART_MAIN);
+    lv_obj_set_style_radius(clear_btn, 4, LV_PART_MAIN);
+    lv_obj_set_style_pad_hor(clear_btn, 10, LV_PART_MAIN);
+    lv_obj_align(clear_btn, LV_ALIGN_RIGHT_MID, -4, 0);
+    lv_obj_add_event_cb(clear_btn, console_clear_btn_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *clear_lbl = lv_label_create(clear_btn);
+    lv_label_set_text(clear_lbl, "Clear");
+    lv_obj_set_style_text_color(clear_lbl, lv_color_hex(0x8B949E), LV_PART_MAIN);
+    lv_obj_center(clear_lbl);
+
+    // ── Terminal textarea ─────────────────────────────────────────────────
+    s_console_ta = lv_textarea_create(parent);
+    lv_obj_set_flex_grow(s_console_ta, 1);
+    lv_obj_set_width(s_console_ta, lv_pct(100));
+
+    lv_obj_set_style_bg_color(s_console_ta, lv_color_hex(0x0D1117), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s_console_ta, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_text_color(s_console_ta, lv_color_hex(0xC9D1D9), LV_PART_MAIN);
+    lv_obj_set_style_border_width(s_console_ta, 0, LV_PART_MAIN);
+    lv_obj_set_style_radius(s_console_ta, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(s_console_ta, 8, LV_PART_MAIN);
+
+    /* Hide the cursor so it doesn't draw attention */
+    lv_obj_set_style_border_width(s_console_ta, 0, LV_PART_CURSOR);
+    lv_obj_set_style_bg_opa(s_console_ta, LV_OPA_TRANSP, LV_PART_CURSOR);
+
+    lv_textarea_set_cursor_click_pos(s_console_ta, false);
+    lv_textarea_set_text(s_console_ta, "");
 }
 
 /* ── Public API ──────────────────────────────────────── */
@@ -545,6 +707,7 @@ void dashboard_init(void) {
     lv_obj_t *tab_state   = lv_tabview_add_tab(tv, LV_SYMBOL_LIST " State");
     lv_obj_t *tab_chart   = lv_tabview_add_tab(tv, LV_SYMBOL_CHARGE " Chart");
     lv_obj_t *tab_espnow  = lv_tabview_add_tab(tv, LV_SYMBOL_WIFI " ESP-NOW");
+    lv_obj_t *tab_console = lv_tabview_add_tab(tv, LV_SYMBOL_EDIT " Console");
 
     create_control_tab(tab_ctrl);
     create_time_tab(tab_time);
@@ -555,6 +718,7 @@ void dashboard_init(void) {
     create_state_tab(tab_state);
     create_chart_tab(tab_chart);
     create_espnow_tab(tab_espnow);
+    create_console_tab(tab_console);
 
     s_espnow_status_badge = lv_obj_create(lv_screen_active());
     lv_obj_set_size(s_espnow_status_badge, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
@@ -572,6 +736,104 @@ void dashboard_init(void) {
     lv_obj_t *status_lbl = lv_label_create(s_espnow_status_badge);
     lv_label_set_text(status_lbl, "ESP-NOW: No Signal");
     lv_obj_set_style_text_color(status_lbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+
+    // ── Command input overlay (keyboard + single-line text entry) ─────────
+    //
+    // Created as a direct child of the screen so it appears on top of the
+    // tabview.  Hidden by default; shown by the "⌨ Cmd" button on the
+    // Console tab toolbar.  The overlay is 710px wide (screen width minus
+    // the 90px left tab bar) and sits at the bottom-right of the screen.
+    //
+    // Layout (bottom-to-top):
+    //   ┌─────────── 710 × 296 ──────────────┐
+    //   │ [> input field ──────────] [Send] [✕] │  ← 46px input row
+    //   │ ════════ LVGL KEYBOARD ═════════════  │  ← 250px keyboard
+    //   └────────────────────────────────────────┘
+    {
+        s_cmd_overlay = lv_obj_create(lv_screen_active());
+        lv_obj_set_size(s_cmd_overlay, 710, 296);
+        lv_obj_align(s_cmd_overlay, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+        lv_obj_set_style_bg_color(s_cmd_overlay, lv_color_hex(0x0D1117), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(s_cmd_overlay, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_border_color(s_cmd_overlay, lv_color_hex(0x30363D), LV_PART_MAIN);
+        lv_obj_set_style_border_width(s_cmd_overlay, 1, LV_PART_MAIN);
+        lv_obj_set_style_pad_all(s_cmd_overlay, 0, LV_PART_MAIN);
+        lv_obj_clear_flag(s_cmd_overlay, LV_OBJ_FLAG_SCROLLABLE);
+
+        // ── Input row ────────────────────────────────────────────────────────
+        lv_obj_t *input_row = lv_obj_create(s_cmd_overlay);
+        lv_obj_set_size(input_row, 710, 46);
+        lv_obj_align(input_row, LV_ALIGN_TOP_MID, 0, 0);
+        lv_obj_set_style_bg_color(input_row, lv_color_hex(0x161B22), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(input_row, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_border_width(input_row, 0, LV_PART_MAIN);
+        lv_obj_set_style_border_side(input_row, LV_BORDER_SIDE_BOTTOM, LV_PART_MAIN);
+        lv_obj_set_style_border_color(input_row, lv_color_hex(0x30363D), LV_PART_MAIN);
+        lv_obj_set_style_border_width(input_row, 1, LV_PART_MAIN);
+        lv_obj_set_style_pad_hor(input_row, 8, LV_PART_MAIN);
+        lv_obj_set_style_pad_ver(input_row, 4, LV_PART_MAIN);
+        lv_obj_set_flex_flow(input_row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(input_row, LV_FLEX_ALIGN_START,
+                              LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_clear_flag(input_row, LV_OBJ_FLAG_SCROLLABLE);
+
+        // ">" prompt label
+        lv_obj_t *prompt = lv_label_create(input_row);
+        lv_label_set_text(prompt, ">");
+        lv_obj_set_style_text_color(prompt, lv_color_hex(0x58A6FF), LV_PART_MAIN);
+        lv_obj_set_style_pad_right(prompt, 6, LV_PART_MAIN);
+
+        // Single-line text input
+        s_cmd_input_ta = lv_textarea_create(input_row);
+        lv_obj_set_flex_grow(s_cmd_input_ta, 1);
+        lv_obj_set_height(s_cmd_input_ta, 36);
+        lv_textarea_set_one_line(s_cmd_input_ta, true);
+        lv_textarea_set_placeholder_text(s_cmd_input_ta, "Enter command...");
+        lv_obj_set_style_bg_color(s_cmd_input_ta, lv_color_hex(0x21262D), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(s_cmd_input_ta, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_text_color(s_cmd_input_ta, lv_color_hex(0xC9D1D9), LV_PART_MAIN);
+        lv_obj_set_style_border_color(s_cmd_input_ta, lv_color_hex(0x30363D), LV_PART_MAIN);
+        lv_obj_set_style_border_width(s_cmd_input_ta, 1, LV_PART_MAIN);
+        lv_obj_set_style_radius(s_cmd_input_ta, 4, LV_PART_MAIN);
+        lv_obj_set_style_pad_hor(s_cmd_input_ta, 4, LV_PART_MAIN);
+
+        // Send button
+        lv_obj_t *send_btn = lv_button_create(input_row);
+        lv_obj_set_size(send_btn, 72, 36);
+        lv_obj_set_style_bg_color(send_btn, lv_color_hex(0x238636), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(send_btn, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_radius(send_btn, 4, LV_PART_MAIN);
+        lv_obj_set_style_pad_hor(send_btn, 0, LV_PART_MAIN);
+        lv_obj_add_event_cb(send_btn, console_send_cmd_cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *send_lbl = lv_label_create(send_btn);
+        lv_label_set_text(send_lbl, LV_SYMBOL_RIGHT " Send");
+        lv_obj_set_style_text_color(send_lbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+        lv_obj_center(send_lbl);
+
+        // Close button
+        lv_obj_t *close_btn = lv_button_create(input_row);
+        lv_obj_set_size(close_btn, 36, 36);
+        lv_obj_set_style_bg_color(close_btn, lv_color_hex(0x3D1A1A), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(close_btn, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_radius(close_btn, 4, LV_PART_MAIN);
+        lv_obj_set_style_pad_hor(close_btn, 0, LV_PART_MAIN);
+        lv_obj_add_event_cb(close_btn, console_close_overlay_cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *close_lbl = lv_label_create(close_btn);
+        lv_label_set_text(close_lbl, LV_SYMBOL_CLOSE);
+        lv_obj_set_style_text_color(close_lbl, lv_color_hex(0xFF6B6B), LV_PART_MAIN);
+        lv_obj_center(close_lbl);
+
+        // ── LVGL keyboard ────────────────────────────────────────────────────
+        lv_obj_t *kb = lv_keyboard_create(s_cmd_overlay);
+        lv_obj_set_size(kb, 710, 250);
+        lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+        lv_keyboard_set_textarea(kb, s_cmd_input_ta);
+        lv_obj_add_event_cb(kb, console_kb_ready_cb,  LV_EVENT_READY,  NULL);
+        lv_obj_add_event_cb(kb, console_kb_cancel_cb, LV_EVENT_CANCEL, NULL);
+
+        // Hide until the user taps "Cmd"
+        lv_obj_add_flag(s_cmd_overlay, LV_OBJ_FLAG_HIDDEN);
+    }
 
     s_dirty = true;
     dashboard_tick();
@@ -647,6 +909,33 @@ void dashboard_set_cmd_response(const char *msg) {
     if (s_cmd_response_label) {
         lv_label_set_text(s_cmd_response_label, msg);
     }
+}
+
+void dashboard_console_append(const char *line) {
+    if (!s_console_ta || !line) return;
+
+    /* Roll over once the line budget is exhausted so the textarea never grows
+     * unboundedly (lv_textarea stores text in a heap-allocated string). */
+    if (s_console_line_count >= CONSOLE_MAX_LINES) {
+        lv_textarea_set_text(s_console_ta, "--- (older output cleared) ---\n");
+        s_console_line_count = 1u;
+    }
+
+    lv_textarea_add_text(s_console_ta, line);
+    s_console_line_count++;
+
+    /* Scroll to the bottom so the newest line is always visible. */
+    lv_textarea_set_cursor_pos(s_console_ta, LV_TEXTAREA_CURSOR_LAST);
+}
+
+void dashboard_console_clear(void) {
+    if (!s_console_ta) return;
+    lv_textarea_set_text(s_console_ta, "");
+    s_console_line_count = 0u;
+}
+
+void dashboard_set_send_cmd_callback(dashboard_send_cmd_cb_t cb) {
+    s_send_cmd_cb = cb;
 }
 
 void dashboard_add_cold_head_reading(cold_head_chart_t chart, float value) {

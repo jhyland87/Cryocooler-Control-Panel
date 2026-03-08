@@ -14,6 +14,7 @@
 #include <nvs_flash.h>
 #include <esp_heap_caps.h>
 #include "telemetry_packet.h"
+#include "console_log.h"
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_panel_rgb.h>
@@ -338,6 +339,13 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info,
 
             xSemaphoreGive(s_telem_mutex);
         }
+    } else if (len > 1 && (uint8_t)data[0] == 0x01) {
+        // ── Console log packet ────────────────────────────────────────────
+        // The master ESP prefixes log lines with 0x01 (SOH) so they can be
+        // distinguished from command responses (which start with '[').
+        // Strip the marker byte and push the text into the ring buffer for
+        // the Console tab.
+        console_log_push((const char *)(data + 1), (uint32_t)(len - 1));
     } else if (len > 0 && len <= 250) {
         // ── Command response string ───────────────────────────────────────
         // The cryocooler sends command output back as raw text (one or more
@@ -359,6 +367,30 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info,
         printf("espnow_recv_cb: unexpected len=%d (expected %u for telemetry)\n",
                len, (unsigned)sizeof(TelemetryPacket));
     }
+}
+
+/**
+ * Send a raw text command to the cryocooler via ESP-NOW.
+ * Used by the on-screen keyboard on the Console tab.
+ * The response will arrive via espnow_recv_cb and be shown in the Console tab.
+ */
+static void espnow_send_text(const char *text)
+{
+    if (!s_peer_registered) {
+        printf("espnow_send_text: no peer registered yet\n");
+        return;
+    }
+    if (!text || text[0] == '\0') return;
+
+    // Clear the response buffer so the next response starts fresh
+    if (xSemaphoreTake(s_telem_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        s_cmd_response_buf[0] = '\0';
+        s_cmd_response_dirty  = false;
+        xSemaphoreGive(s_telem_mutex);
+    }
+
+    printf("espnow_send_text: \"%s\"\n", text);
+    esp_now_send(s_telem_src_mac, (const uint8_t *)text, strlen(text));
 }
 
 static void espnow_send_command(dashboard_ctrl_action_t action)
@@ -565,9 +597,19 @@ static void ui_task(void *arg)
                 memcpy(resp_copy, s_cmd_response_buf, CMD_RESPONSE_BUF_SIZE);
                 s_cmd_response_dirty = false;
                 xSemaphoreGive(s_telem_mutex);
+                // Show response in the Control tab response area
                 dashboard_set_cmd_response(resp_copy);
+                // Also mirror the response to the Console tab so keyboard
+                // interactions have a full command/response history there too
+                dashboard_console_append(resp_copy);
             }
         }
+
+        // ── Console log drain ─────────────────────────────────────────────
+        // Forward any lines pushed into the ring buffer by espnow_recv_cb
+        // (Core 0) to the Console tab textarea.  The LVGL lock is already
+        // held here, so dashboard_console_append() can safely call LVGL.
+        console_log_drain(dashboard_console_append);
 
         _lock_release(&lvgl_api_lock);
         vTaskDelay(pdMS_TO_TICKS(5));
@@ -575,6 +617,8 @@ static void ui_task(void *arg)
 }
 
 extern "C" void app_main() {
+    console_log_init();
+
     printf("ESP-IDF version: %d.%d.%d\n",ESP_IDF_VERSION_MAJOR,ESP_IDF_VERSION_MINOR,ESP_IDF_VERSION_PATCH);
 
     uint8_t mac[6];
@@ -588,6 +632,7 @@ extern "C" void app_main() {
     espnow_initialize();
 
     dashboard_set_ctrl_callback(espnow_send_command);
+    dashboard_set_send_cmd_callback(espnow_send_text);
 
     xTaskCreate(ui_task, "ui_task", 8192, NULL, 2, NULL);
 }

@@ -89,6 +89,32 @@ void dashboard_set_espnow_status(bool connected);
  */
 void dashboard_set_cmd_response(const char *msg);
 
+/**
+ * Append a line of text to the Console tab.
+ * Called from ui_task after draining the console_log ring buffer.
+ * Must be called with the LVGL API lock held.
+ */
+void dashboard_console_append(const char *line);
+
+/**
+ * Clear all text currently displayed in the Console tab.
+ */
+void dashboard_console_clear(void);
+
+/**
+ * Callback type invoked when the user submits a command via the on-screen
+ * keyboard on the Console tab.  @p cmd is a null-terminated command string
+ * (no trailing newline).
+ */
+typedef void (*dashboard_send_cmd_cb_t)(const char *cmd);
+
+/**
+ * Register the callback used to transmit keyboard-entered commands to the
+ * cryocooler (typically via ESP-NOW).  Must be called before the first
+ * use of the Console tab's keyboard.
+ */
+void dashboard_set_send_cmd_callback(dashboard_send_cmd_cb_t cb);
+
 #ifdef __cplusplus
 }
 #endif
