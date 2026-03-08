@@ -82,6 +82,13 @@ void dashboard_set_ctrl_callback(dashboard_ctrl_cb_t cb);
 void dashboard_set_espnow_message(const char *msg);
 void dashboard_set_espnow_status(bool connected);
 
+/**
+ * Display a command response string in the dedicated response area on the
+ * Control tab.  Called from the LVGL task after an ESP-NOW response packet
+ * arrives from the cryocooler.  @p msg must be a null-terminated C string.
+ */
+void dashboard_set_cmd_response(const char *msg);
+
 #ifdef __cplusplus
 }
 #endif

@@ -296,23 +296,106 @@ static volatile int64_t   s_espnow_last_recv_us;
 
 static char *s_espnow_display;
 
+// ── Command response buffer ───────────────────────────────────────────────────
+// Accumulates text frames received from the cryocooler in reply to a command.
+// A single command response may arrive as multiple consecutive ESP-NOW frames
+// (each up to 246 bytes) if the output of commands::processLine() exceeds one
+// chunk.  Frames are appended here until the next command is sent, at which
+// point the buffer is cleared.  Access is protected by s_telem_mutex.
+#define CMD_RESPONSE_BUF_SIZE 512
+
+static char          s_cmd_response_buf[CMD_RESPONSE_BUF_SIZE];
+static volatile bool s_cmd_response_dirty;
+
 static void espnow_recv_cb(const esp_now_recv_info_t *info,
                            const uint8_t *data, int len)
 {
-    printf("espnow_recv_cb: len: %d, sizeof(TelemetryPacket): %d\n", len, sizeof(TelemetryPacket));
-    if (len != sizeof(TelemetryPacket)) return;
+    if (len == (int)sizeof(TelemetryPacket)) {
+        // ── Telemetry packet ──────────────────────────────────────────────
+        if (xSemaphoreTake(s_telem_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            memcpy(&s_telem_pkt, data, sizeof(TelemetryPacket));
+            memcpy(s_telem_src_mac, info->src_addr, 6);
+            s_telem_ready = true;
+            s_espnow_last_recv_us = esp_timer_get_time();
 
-    if (xSemaphoreTake(s_telem_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        memcpy(&s_telem_pkt, data, sizeof(TelemetryPacket));
-        memcpy(s_telem_src_mac, info->src_addr, 6);
-        s_telem_ready = true;
-        s_espnow_last_recv_us = esp_timer_get_time();
-        xSemaphoreGive(s_telem_mutex);
+            // Register the cryocooler as a send peer the first time we hear
+            // from it.  We learn the MAC dynamically rather than hardcoding
+            // it so the same firmware works with any cryocooler unit nearby.
+            if (!s_peer_registered) {
+                esp_now_peer_info_t peer = {};
+                memcpy(peer.peer_addr, info->src_addr, 6);
+                peer.channel = 0;      // 0 = follow current WiFi channel
+                peer.encrypt  = false;
+                if (esp_now_add_peer(&peer) == ESP_OK) {
+                    s_peer_registered = true;
+                    printf("ESP-NOW: peer registered %02X:%02X:%02X:%02X:%02X:%02X\n",
+                           info->src_addr[0], info->src_addr[1], info->src_addr[2],
+                           info->src_addr[3], info->src_addr[4], info->src_addr[5]);
+                } else {
+                    printf("ESP-NOW: esp_now_add_peer failed\n");
+                }
+            }
+
+            xSemaphoreGive(s_telem_mutex);
+        }
+    } else if (len > 0 && len <= 250) {
+        // ── Command response string ───────────────────────────────────────
+        // The cryocooler sends command output back as raw text (one or more
+        // frames).  Append each frame to s_cmd_response_buf so multi-line
+        // responses (e.g. from "help" or "status") accumulate correctly.
+        if (xSemaphoreTake(s_telem_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            const size_t cur       = strlen(s_cmd_response_buf);
+            const size_t available = (CMD_RESPONSE_BUF_SIZE - 1) - cur;
+            if (available > 0) {
+                const size_t copy = (size_t)len < available ? (size_t)len : available;
+                memcpy(s_cmd_response_buf + cur, data, copy);
+                s_cmd_response_buf[cur + copy] = '\0';
+            }
+            s_cmd_response_dirty = true;
+            xSemaphoreGive(s_telem_mutex);
+        }
+        printf("espnow_recv_cb: response frame len=%d\n", len);
+    } else {
+        printf("espnow_recv_cb: unexpected len=%d (expected %u for telemetry)\n",
+               len, (unsigned)sizeof(TelemetryPacket));
     }
 }
 
-static void espnow_send_command(dashboard_ctrl_action_t action) {
-    printf("espnow_send_command: %d\n", action);
+static void espnow_send_command(dashboard_ctrl_action_t action)
+{
+    if (!s_peer_registered) {
+        printf("espnow_send_command: no peer yet — waiting for first telemetry packet\n");
+        return;
+    }
+
+    // Map UI action → cryocooler console command string.
+    // These must match the command table in the cryocooler's commands.cpp.
+    const char *cmd = NULL;
+    switch (action) {
+        case CTRL_ACTION_START:       cmd = "start";       break;
+        case CTRL_ACTION_STOP:        cmd = "stop";        break;
+        case CTRL_ACTION_REINIT:      cmd = "reinit";      break;
+        case CTRL_ACTION_OFF:         cmd = "off";         break;
+        case CTRL_ACTION_FAULT_CLEAR: cmd = "fault clear"; break;
+        default:
+            printf("espnow_send_command: unknown action %d\n", (int)action);
+            return;
+    }
+
+    // Clear the response buffer so the next response starts fresh.
+    if (xSemaphoreTake(s_telem_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        s_cmd_response_buf[0] = '\0';
+        s_cmd_response_dirty  = false;
+        xSemaphoreGive(s_telem_mutex);
+    }
+
+    printf("espnow_send_command: sending \"%s\"\n", cmd);
+    const esp_err_t err = esp_now_send(s_telem_src_mac,
+                                       (const uint8_t *)cmd,
+                                       strlen(cmd));
+    if (err != ESP_OK) {
+        printf("espnow_send_command: esp_now_send failed: 0x%x\n", err);
+    }
 }
 
 
@@ -453,7 +536,6 @@ static void ui_task(void *arg)
         ui_tick();
         //printf("s_telem_ready: %d\n", s_telem_ready);
         if (s_telem_ready) {
-            //printf("s_telem_ready: true\n");
             if (xSemaphoreTake(s_telem_mutex, 0) == pdTRUE) {
                 TelemetryPacket local;
                 uint8_t mac[6];
@@ -470,6 +552,21 @@ static void ui_task(void *arg)
         } else if (s_espnow_last_recv_us > 0 &&
                    (esp_timer_get_time() - s_espnow_last_recv_us) > ESPNOW_TIMEOUT_US) {
             dashboard_set_espnow_status(false);
+        }
+
+        // ── Command response display ──────────────────────────────────────
+        // Drain the response buffer into the Control tab response area.
+        // s_cmd_response_dirty is set by espnow_recv_cb for each response
+        // frame; we snapshot under the mutex and call dashboard under the
+        // LVGL lock (already held for this whole block).
+        if (s_cmd_response_dirty) {
+            if (xSemaphoreTake(s_telem_mutex, 0) == pdTRUE) {
+                char resp_copy[CMD_RESPONSE_BUF_SIZE];
+                memcpy(resp_copy, s_cmd_response_buf, CMD_RESPONSE_BUF_SIZE);
+                s_cmd_response_dirty = false;
+                xSemaphoreGive(s_telem_mutex);
+                dashboard_set_cmd_response(resp_copy);
+            }
         }
 
         _lock_release(&lvgl_api_lock);

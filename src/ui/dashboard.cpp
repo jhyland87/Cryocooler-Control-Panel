@@ -3,7 +3,8 @@
 #include <string.h>
 
 static dashboard_data_t s_data;
-static bool s_dirty = true;
+static bool s_dirty            = true;
+static bool s_espnow_connected = false;
 
 static lv_obj_t *s_time_table;
 static lv_obj_t *s_led_table;
@@ -11,8 +12,12 @@ static lv_obj_t *s_relay_table;
 static lv_obj_t *s_system_table;
 static lv_obj_t *s_measure_table;
 static lv_obj_t *s_state_table;
+static lv_obj_t *s_cmd_response_label;
 
 #define CH_POINT_COUNT 60
+
+static constexpr int32_t CTRL_BUTTON_COUNT = 5;
+static lv_obj_t         *s_ctrl_buttons[CTRL_BUTTON_COUNT];
 
 static dashboard_ctrl_cb_t s_ctrl_cb;
 
@@ -31,10 +36,10 @@ static const char *bool_to_true_false(bool val) {
 }
 
 static void init_stub_data(void) {
-    snprintf(s_data.runtime_since_powerup, DASHBOARD_VALUE_BUF_SIZE, "00:12:34");
-    snprintf(s_data.time_cryo_running, DASHBOARD_VALUE_BUF_SIZE, "00:10:00");
-    snprintf(s_data.cryo_accumulated_runtime, DASHBOARD_VALUE_BUF_SIZE, "1234:56:78");
-    snprintf(s_data.system_accumulated_runtime, DASHBOARD_VALUE_BUF_SIZE, "5678:90:12");
+    snprintf(s_data.runtime_since_powerup, DASHBOARD_VALUE_BUF_SIZE, "--");
+    snprintf(s_data.time_cryo_running, DASHBOARD_VALUE_BUF_SIZE, "--");
+    snprintf(s_data.cryo_accumulated_runtime, DASHBOARD_VALUE_BUF_SIZE, "--");
+    snprintf(s_data.system_accumulated_runtime, DASHBOARD_VALUE_BUF_SIZE, "--");
 
     s_data.status_led = false;
     s_data.bypass_led = false;
@@ -68,8 +73,8 @@ static void init_stub_data(void) {
     s_data.cooler_frequency = 60.0f;
     s_data.cooler_power_drive = 79.0f;
 
-    snprintf(s_data.state_machine_mode, DASHBOARD_VALUE_BUF_SIZE, "Automatic");
-    snprintf(s_data.state_machine_state, DASHBOARD_VALUE_BUF_SIZE, "Initialize");
+    snprintf(s_data.state_machine_mode, DASHBOARD_VALUE_BUF_SIZE, "--");
+    snprintf(s_data.state_machine_state, DASHBOARD_VALUE_BUF_SIZE, "--");
 }
 
 
@@ -130,7 +135,10 @@ static lv_obj_t *create_ctrl_button(lv_obj_t *parent, const char *label_text,
     lv_obj_set_style_shadow_offset_y(btn, 3, LV_PART_MAIN);
 
     lv_obj_set_style_bg_color(btn, lv_color_darken(bg_color, LV_OPA_20),
-                              (lv_style_selector_t)(LV_PART_MAIN | LV_STATE_PRESSED));
+                              (lv_style_selector_t)((uint32_t)LV_PART_MAIN | (uint32_t)LV_STATE_PRESSED));
+
+    /* Dim the whole button when in the disabled state */
+    lv_obj_set_style_opa(btn, LV_OPA_40, LV_STATE_DISABLED);
 
     lv_obj_t *lbl = lv_label_create(btn);
     lv_label_set_text(lbl, label_text);
@@ -143,17 +151,56 @@ static lv_obj_t *create_ctrl_button(lv_obj_t *parent, const char *label_text,
 }
 
 static void create_control_tab(lv_obj_t *parent) {
-    lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_flex_align(parent, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_all(parent, 30, LV_PART_MAIN);
-    lv_obj_set_style_pad_row(parent, 30, LV_PART_MAIN);
-    lv_obj_set_style_pad_column(parent, 40, LV_PART_MAIN);
+    // Column layout: button grid on top, response area below.
+    lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(parent, 16, LV_PART_MAIN);
+    lv_obj_set_style_pad_row(parent, 14, LV_PART_MAIN);
 
-    create_ctrl_button(parent, LV_SYMBOL_PLAY " Start",       lv_color_hex(0x2E7D32), CTRL_ACTION_START);
-    create_ctrl_button(parent, LV_SYMBOL_STOP " Stop",        lv_color_hex(0xC62828), CTRL_ACTION_STOP);
-    create_ctrl_button(parent, LV_SYMBOL_REFRESH " Reinit",   lv_color_hex(0x1565C0), CTRL_ACTION_REINIT);
-    create_ctrl_button(parent, LV_SYMBOL_POWER " Off",        lv_color_hex(0xE65100), CTRL_ACTION_OFF);
-    create_ctrl_button(parent, LV_SYMBOL_CLOSE " Fault Clear",lv_color_hex(0x6A1B9A), CTRL_ACTION_FAULT_CLEAR);
+    // ── Button grid container ──────────────────────────────────────────────
+    lv_obj_t *btn_cont = lv_obj_create(parent);
+    lv_obj_set_size(btn_cont, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_border_width(btn_cont, 0, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(btn_cont, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(btn_cont, 0, LV_PART_MAIN);
+    lv_obj_set_flex_flow(btn_cont, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(btn_cont, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(btn_cont, 20, LV_PART_MAIN);
+    lv_obj_set_style_pad_column(btn_cont, 30, LV_PART_MAIN);
+
+    s_ctrl_buttons[0] = create_ctrl_button(btn_cont, LV_SYMBOL_PLAY " Start",        lv_color_hex(0x2E7D32), CTRL_ACTION_START);
+    s_ctrl_buttons[1] = create_ctrl_button(btn_cont, LV_SYMBOL_STOP " Stop",         lv_color_hex(0xC62828), CTRL_ACTION_STOP);
+    s_ctrl_buttons[2] = create_ctrl_button(btn_cont, LV_SYMBOL_REFRESH " Reinit",    lv_color_hex(0x1565C0), CTRL_ACTION_REINIT);
+    s_ctrl_buttons[3] = create_ctrl_button(btn_cont, LV_SYMBOL_POWER " Off",         lv_color_hex(0xE65100), CTRL_ACTION_OFF);
+    s_ctrl_buttons[4] = create_ctrl_button(btn_cont, LV_SYMBOL_CLOSE " Fault Clear", lv_color_hex(0x6A1B9A), CTRL_ACTION_FAULT_CLEAR);
+
+    /* Start disabled — buttons are enabled once the first ESP-NOW packet arrives */
+    for (int32_t i = 0; i < CTRL_BUTTON_COUNT; i++) {
+        lv_obj_add_state(s_ctrl_buttons[i], LV_STATE_DISABLED);
+    }
+
+    // ── Command response area ──────────────────────────────────────────────
+    // Displays the text response received from the cryocooler over ESP-NOW
+    // after each control command is sent.
+    lv_obj_t *resp_card = lv_obj_create(parent);
+    lv_obj_set_size(resp_card, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_min_height(resp_card, 80, LV_PART_MAIN);
+    lv_obj_set_style_border_color(resp_card, lv_color_hex(0xCCCCCC), LV_PART_MAIN);
+    lv_obj_set_style_border_width(resp_card, 1, LV_PART_MAIN);
+    lv_obj_set_style_radius(resp_card, 6, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(resp_card, 10, LV_PART_MAIN);
+    lv_obj_set_style_pad_row(resp_card, 4, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(resp_card, lv_color_hex(0xF5F5F5), LV_PART_MAIN);
+    lv_obj_set_flex_flow(resp_card, LV_FLEX_FLOW_COLUMN);
+
+    lv_obj_t *resp_title = lv_label_create(resp_card);
+    lv_label_set_text(resp_title, "Response:");
+    lv_obj_set_style_text_color(resp_title, lv_color_hex(0x666666), LV_PART_MAIN);
+
+    s_cmd_response_label = lv_label_create(resp_card);
+    lv_label_set_long_mode(s_cmd_response_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(s_cmd_response_label, lv_pct(100));
+    lv_label_set_text(s_cmd_response_label, "\xe2\x80\x93");   // en dash placeholder
+    lv_obj_set_style_text_color(s_cmd_response_label, lv_color_hex(0x1B5E20), LV_PART_MAIN);
 }
 
 /* ── Time Tab ────────────────────────────────────────── */
@@ -177,6 +224,13 @@ static void create_time_tab(lv_obj_t *parent) {
 }
 
 static void refresh_time_tab(void) {
+    if (!s_espnow_connected) {
+        lv_table_set_cell_value(s_time_table, 1, 1, "----");
+        lv_table_set_cell_value(s_time_table, 2, 1, "----");
+        lv_table_set_cell_value(s_time_table, 3, 1, "----");
+        lv_table_set_cell_value(s_time_table, 4, 1, "----");
+        return;
+    }
     lv_table_set_cell_value(s_time_table, 1, 1, s_data.runtime_since_powerup);
     lv_table_set_cell_value(s_time_table, 2, 1, s_data.time_cryo_running);
     lv_table_set_cell_value(s_time_table, 3, 1, s_data.cryo_accumulated_runtime);
@@ -202,6 +256,11 @@ static void create_led_tab(lv_obj_t *parent) {
 }
 
 static void refresh_led_tab(void) {
+    if (!s_espnow_connected) {
+        lv_table_set_cell_value(s_led_table, 1, 1, "----");
+        lv_table_set_cell_value(s_led_table, 2, 1, "----");
+        return;
+    }
     lv_table_set_cell_value(s_led_table, 1, 1, bool_to_on_off(s_data.status_led));
     lv_table_set_cell_value(s_led_table, 2, 1, bool_to_on_off(s_data.bypass_led));
 }
@@ -225,6 +284,11 @@ static void create_relay_tab(lv_obj_t *parent) {
 }
 
 static void refresh_relay_tab(void) {
+    if (!s_espnow_connected) {
+        lv_table_set_cell_value(s_relay_table, 1, 1, "----");
+        lv_table_set_cell_value(s_relay_table, 2, 1, "----");
+        return;
+    }
     lv_table_set_cell_value(s_relay_table, 1, 1, bool_to_on_off(s_data.bypass_relay));
     lv_table_set_cell_value(s_relay_table, 2, 1, bool_to_on_off(s_data.force_bypass_relay));
 }
@@ -256,6 +320,12 @@ static void create_system_tab(lv_obj_t *parent) {
 }
 
 static void refresh_system_tab(void) {
+    if (!s_espnow_connected) {
+        for (uint32_t row = 1; row <= 10; row++) {
+            lv_table_set_cell_value(s_system_table, row, 1, "----");
+        }
+        return;
+    }
     lv_table_set_cell_value(s_system_table, 1, 1, bool_to_true_false(s_data.power_current_loop_regulating));
     lv_table_set_cell_value(s_system_table, 2, 1, bool_to_true_false(s_data.power_loop_active));
     lv_table_set_cell_value(s_system_table, 3, 1, bool_to_true_false(s_data.power_duty_limit_exceeded));
@@ -316,6 +386,12 @@ static void create_measure_tab(lv_obj_t *parent) {
 }
 
 static void refresh_measure_tab(void) {
+    if (!s_espnow_connected) {
+        for (uint32_t row = 1; row <= 14; row++) {
+            lv_table_set_cell_value(s_measure_table, row, 1, "----");
+        }
+        return;
+    }
     lv_table_set_cell_value_fmt(s_measure_table, 1, 1, "%.1f", (double)s_data.cold_stage_narrow_temp);
     lv_table_set_cell_value_fmt(s_measure_table, 2, 1, "%.1f", (double)s_data.cold_stage_wide_temp);
     lv_table_set_cell_value_fmt(s_measure_table, 3, 1, "%.1f", (double)s_data.cooler_rejection_temp);
@@ -351,6 +427,11 @@ static void create_state_tab(lv_obj_t *parent) {
 }
 
 static void refresh_state_tab(void) {
+    if (!s_espnow_connected) {
+        lv_table_set_cell_value(s_state_table, 1, 1, "----");
+        lv_table_set_cell_value(s_state_table, 2, 1, "----");
+        return;
+    }
     lv_table_set_cell_value(s_state_table, 1, 1, s_data.state_machine_mode);
     lv_table_set_cell_value(s_state_table, 2, 1, s_data.state_machine_state);
 }
@@ -450,10 +531,10 @@ void dashboard_init(void) {
     lv_obj_set_style_text_color(tab_bar, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
     lv_obj_set_style_border_side(tab_bar, LV_BORDER_SIDE_RIGHT, LV_PART_ITEMS);
     lv_obj_set_style_border_width(tab_bar, 3,
-                                 (lv_style_selector_t)(LV_PART_ITEMS | LV_STATE_CHECKED));
+                                 (lv_style_selector_t)((uint32_t)LV_PART_ITEMS | (uint32_t)LV_STATE_CHECKED));
     lv_obj_set_style_border_color(tab_bar, lv_color_hex(0x66BBFF),
-                                  (lv_style_selector_t)(LV_PART_ITEMS | LV_STATE_CHECKED));
-    lv_obj_set_style_text_align(tab_bar, LV_TEXT_ALIGN_CENTER, LV_PART_ITEMS);
+                                  (lv_style_selector_t)((uint32_t)LV_PART_ITEMS | (uint32_t)LV_STATE_CHECKED));
+    lv_obj_set_style_text_align(tab_bar, LV_TEXT_ALIGN_LEFT, LV_PART_ITEMS);
 
     lv_obj_t *tab_ctrl    = lv_tabview_add_tab(tv, LV_SYMBOL_SETTINGS " Control");
     lv_obj_t *tab_time    = lv_tabview_add_tab(tv, LV_SYMBOL_BELL " Time");
@@ -522,6 +603,9 @@ void dashboard_set_ctrl_callback(dashboard_ctrl_cb_t cb) {
 
 void dashboard_set_espnow_status(bool connected) {
     if (!s_espnow_status_badge) return;
+
+    s_espnow_connected = connected;
+
     lv_obj_t *lbl = lv_obj_get_child(s_espnow_status_badge, 0);
     if (connected) {
         lv_obj_set_style_bg_color(s_espnow_status_badge, lv_color_hex(0x2E7D32), LV_PART_MAIN);
@@ -529,12 +613,39 @@ void dashboard_set_espnow_status(bool connected) {
     } else {
         lv_obj_set_style_bg_color(s_espnow_status_badge, lv_color_hex(0x666666), LV_PART_MAIN);
         lv_label_set_text(lbl, "ESP-NOW: No Signal");
+        /* Notify the ESP-NOW debug tab that the master has gone away */
+        if (s_espnow_label) {
+            lv_label_set_text(s_espnow_label,
+                              LV_SYMBOL_WARNING " Connection lost - no signal from master ESP");
+            lv_obj_set_style_text_color(s_espnow_label, lv_color_hex(0xC62828), LV_PART_MAIN);
+        }
     }
+
+    /* Enable or disable the control buttons to match the connection state */
+    for (int32_t i = 0; i < CTRL_BUTTON_COUNT; i++) {
+        if (!s_ctrl_buttons[i]) continue;
+        if (connected) {
+            lv_obj_clear_state(s_ctrl_buttons[i], LV_STATE_DISABLED);
+        } else {
+            lv_obj_add_state(s_ctrl_buttons[i], LV_STATE_DISABLED);
+        }
+    }
+
+    /* Refresh all data tabs so they show live values or "----" as appropriate */
+    dashboard_mark_dirty();
 }
 
 void dashboard_set_espnow_message(const char *msg) {
     if (s_espnow_label) {
         lv_label_set_text(s_espnow_label, msg);
+        /* Restore normal colour — may have been set to red on disconnect */
+        lv_obj_set_style_text_color(s_espnow_label, lv_color_hex(0x333333), LV_PART_MAIN);
+    }
+}
+
+void dashboard_set_cmd_response(const char *msg) {
+    if (s_cmd_response_label) {
+        lv_label_set_text(s_cmd_response_label, msg);
     }
 }
 
